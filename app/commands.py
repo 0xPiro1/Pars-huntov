@@ -39,6 +39,29 @@ def init(token: str, state: dict[str, Any], run_cycle_fn: Callable) -> None:
     _token = token
     _state = state
     _run_cycle_fn = run_cycle_fn
+    _set_my_commands()
+
+
+def _set_my_commands() -> None:
+    """Register bot menu commands via setMyCommands API."""
+    url = f"https://api.telegram.org/bot{_token}/setMyCommands"
+    payload = {
+        "commands": [
+            {"command": "status", "description": "Состояние watcher'а"},
+            {"command": "test", "description": "Тестовое сообщение"},
+            {"command": "latest", "description": "Последние 5 листингов"},
+            {"command": "force", "description": "Принудительный цикл fetch→notify"},
+            {"command": "help", "description": "Список команд"},
+        ]
+    }
+    try:
+        resp = requests.post(url, json=payload, timeout=10)
+        if resp.ok:
+            log.info("Bot menu commands registered")
+        else:
+            log.error("setMyCommands error: %s", resp.text[:200])
+    except Exception:
+        log.exception("setMyCommands failed")
 
 
 # ── command handlers ─────────────────────────────────────────────
