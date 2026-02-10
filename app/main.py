@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 
-from app import db, filters, notifier, superteam
+from app import commands, db, filters, notifier, superteam
 from app.settings import (
     DATABASE_URL,
     LOG_LEVEL,
@@ -20,19 +21,32 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+# Shared state visible to commands thread
+state: dict = {
+    "start_time": time.time(),
+    "last_check_at": None,
+    "last_success_at": None,
+    "last_error": None,
+}
 
-def run_cycle() -> int:
-    """Single polling cycle. Returns number of notifications sent."""
+
+def run_cycle() -> dict[str, int]:
+    """Single polling cycle. Returns {new, notified, skipped}."""
+    state["last_check_at"] = time.time()
+
     listings = superteam.fetch_listings()
     if not listings:
         log.info("No listings returned from API")
-        return 0
+        state["last_success_at"] = time.time()
+        return {"new": 0, "notified": 0, "skipped": 0}
 
     log.info("Fetched %d listings from API", len(listings))
-    sent = 0
+    new_count = 0
+    notified_count = 0
+    skipped_count = 0
 
     for item in listings:
-        if sent >= MAX_NOTIFS_PER_RUN:
+        if notified_count >= MAX_NOTIFS_PER_RUN:
             log.info("Hit MAX_NOTIFS_PER_RUN (%d), stopping cycle", MAX_NOTIFS_PER_RUN)
             break
 
@@ -46,6 +60,8 @@ def run_cycle() -> int:
 
         # Upsert into DB
         is_new = db.upsert_listing(DATABASE_URL, norm)
+        if is_new:
+            new_count += 1
 
         # Decide whether to notify
         should_notify = is_new or db.needs_notification(DATABASE_URL, norm["id"])
@@ -55,15 +71,18 @@ def run_cycle() -> int:
         # Country filter
         if not filters.is_allowed(norm.get("region")):
             log.debug("Skipped (region=%s): %s", norm.get("region"), norm["title"])
+            skipped_count += 1
             continue
 
         # Send Telegram
         ok = notifier.send_telegram(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, norm)
         if ok:
             db.mark_notified(DATABASE_URL, norm["id"])
-            sent += 1
+            notified_count += 1
 
-    return sent
+    state["last_success_at"] = time.time()
+    state["last_error"] = None
+    return {"new": new_count, "notified": notified_count, "skipped": skipped_count}
 
 
 def main() -> None:
@@ -74,11 +93,22 @@ def main() -> None:
     )
     db.init_db(DATABASE_URL)
 
+    # Start bot commands poller in a daemon thread
+    commands.init(TELEGRAM_BOT_TOKEN, state, run_cycle)
+    t = threading.Thread(target=commands.poll_commands, daemon=True)
+    t.start()
+    log.info("Commands poller thread started")
+
+    # Watcher loop
     while True:
         try:
-            sent = run_cycle()
-            log.info("Cycle done — %d notifications sent", sent)
-        except Exception:
+            result = run_cycle()
+            log.info(
+                "Cycle done — new=%d notified=%d skipped=%d",
+                result["new"], result["notified"], result["skipped"],
+            )
+        except Exception as e:
+            state["last_error"] = str(e)
             log.exception("Cycle error")
         log.info("Sleeping %ds …", POLL_INTERVAL_SECONDS)
         time.sleep(POLL_INTERVAL_SECONDS)

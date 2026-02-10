@@ -59,3 +59,22 @@ def send_telegram(
     except Exception:
         log.exception("TG request failed")
         return False
+
+
+def send_message(token: str, chat_id: str | int, text: str) -> bool:
+    """Send a plain text message to a chat. Returns True on success."""
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "disable_web_page_preview": True,
+    }
+    try:
+        resp = requests.post(
+            API_URL.format(token=token),
+            json=payload,
+            timeout=TIMEOUT,
+        )
+        return resp.ok
+    except Exception:
+        log.exception("TG send_message failed")
+        return False

@@ -72,3 +72,58 @@ def mark_notified(dsn: str, listing_id: str) -> None:
         with conn.cursor() as cur:
             cur.execute(sql, (listing_id,))
         conn.commit()
+
+
+def get_stats(dsn: str) -> dict[str, Any]:
+    """Return aggregate stats from listings_seen."""
+    sql = """
+    SELECT
+        count(*)                              AS total,
+        count(notified_at)                    AS notified,
+        max(first_seen_at)                    AS last_first_seen
+    FROM listings_seen;
+    """
+    last_sql = """
+    SELECT title, tab, region
+    FROM listings_seen
+    ORDER BY first_seen_at DESC
+    LIMIT 1;
+    """
+    with psycopg2.connect(dsn) as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            row = cur.fetchone()
+            cur.execute(last_sql)
+            last = cur.fetchone()
+    return {
+        "total": row[0] if row else 0,
+        "notified": row[1] if row else 0,
+        "last_first_seen": row[2] if row else None,
+        "last_title": last[0] if last else None,
+        "last_tab": last[1] if last else None,
+        "last_region": last[2] if last else None,
+    }
+
+
+def get_latest(dsn: str, limit: int = 5) -> list[dict[str, Any]]:
+    """Return latest N listings from listings_seen."""
+    sql = """
+    SELECT title, tab, region, url, first_seen_at
+    FROM listings_seen
+    ORDER BY first_seen_at DESC
+    LIMIT %s;
+    """
+    with psycopg2.connect(dsn) as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (limit,))
+            rows = cur.fetchall()
+    return [
+        {
+            "title": r[0],
+            "tab": r[1],
+            "region": r[2],
+            "url": r[3],
+            "first_seen_at": r[4],
+        }
+        for r in rows
+    ]
